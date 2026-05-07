@@ -250,3 +250,29 @@ export async function saveFile(fileUrl: string, content: string, siteUrl?: strin
     return { status: false, message: error.message };
   }
 }
+
+/**
+ * Cria uma pasta no SharePoint
+ */
+export async function createFolder(folderPath: string, siteUrl?: string): Promise<SpResult<any>> {
+  try {
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    const digest = await refreshDigest(targetSiteUrl);
+    const url = `${targetSiteUrl}/_api/web/folders/add('${folderPath}')`;
+    
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 
+        'X-RequestDigest': digest,
+        'Accept': 'application/json; odata=verbose'
+      },
+      credentials: 'same-origin'
+    });
+
+    if (!resp.ok) return { status: false, message: await parseSpError(resp) };
+    const data = await resp.json();
+    return { status: true, data: data?.d };
+  } catch (error: any) {
+    return { status: false, message: error.message };
+  }
+}

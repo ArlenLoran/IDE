@@ -245,58 +245,106 @@ export default function App() {
     setError(null);
   };
 
-  // Build via Browser (Sem Backend)
+  // Build via Browser (Sem Backend) - COMPILAÇÃO COMPLETA DA PASTA
   const handleBrowserBuild = async () => {
-    console.log('[BROWSER-BUILD] Clicked');
-    if (!selectedFile) {
-       setError("Por favor, selecione um arquivo no editor antes de compilar.");
-       return;
-    }
-    
-    if (!code || code.trim() === '') {
-       setError("O arquivo está vazio. Escreva algum código antes de compilar.");
-       return;
-    }
-
     setExecutingCommand(true);
     setBuildStatus('building');
     setIsTerminalOpen(true);
-    setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Iniciando compilação de ${selectedFile.Name}...`]);
+    setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Iniciando compilação do projeto em "${currentFolder}"...`]);
+    setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Passo 1: Criando/Verificando pasta /dist...`]);
     
     try {
-      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Aplicando transformações Sucrase (typescript, jsx, imports)...`]);
+      const distPath = `${currentFolder}/dist`;
       
-      // Transpilação TSX/TS para JS usando Sucrase (100% Client-side)
-      const compiled = transform(code, {
-        transforms: ['typescript', 'jsx', 'imports'],
-        production: true,
-      });
-
-      if (!compiled || !compiled.code) {
-        throw new Error("A compilação retornou um resultado vazio.");
-      }
-
-      const jsFileName = selectedFile.Name.replace(/\.(tsx|ts|jsx)$/, '.js');
-      const finalJsName = jsFileName.endsWith('.js') ? jsFileName : jsFileName + '.js';
-      const jsFileUrl = `${currentFolder}/${finalJsName}`;
-      
-      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Sucesso! Salvando arquivo em: ${jsFileUrl}`]);
-      
-      const saveResult = await saveFile(jsFileUrl, compiled.code, activeSiteUrl);
-      
-      if (saveResult.status) {
-        setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] SUCESSO: Arquivo ${finalJsName} persistido no SharePoint.`]);
-        setBuildStatus('success');
-        loadPath(currentFolder, activeSiteUrl);
-        setTimeout(() => setBuildStatus('idle'), 3000);
+      // 1. Garante que a pasta dist existe
+      if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+        // Mock
       } else {
-        throw new Error(saveResult.message || "Erro desconhecido ao salvar.");
+        await createFolder(distPath, activeSiteUrl);
       }
+
+      // 2. Itera sobre todos os arquivos da pasta atual
+      for (const file of files) {
+        if (file.Name === 'dist' || file.Name === 'Forms') continue;
+        
+        setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Processando: ${file.Name}...`]);
+        
+        // Baixa o conteúdo
+        let rawContent = '';
+        if (file.Name === selectedFile?.Name && code) {
+          rawContent = code; // Usa o código atual do editor se for o arquivo aberto
+        } else {
+          const contentResult = await getFileContent(file.ServerRelativeUrl, activeSiteUrl);
+          if (contentResult.status) {
+            rawContent = contentResult.data;
+          } else {
+             setTerminalLogs(prev => [...prev, `  [!] Ignorando ${file.Name}: não foi possível baixar.`]);
+             continue;
+          }
+        }
+
+        let finalContent = rawContent;
+        let finalFileName = file.Name;
+
+        // Transpila se for TS/TSX
+        if (file.Name.match(/\.(tsx|ts|jsx)$/)) {
+          try {
+            const compiled = transform(rawContent, {
+              transforms: ['typescript', 'jsx', 'imports'],
+              production: true,
+            });
+            finalContent = compiled.code;
+            finalFileName = file.Name.replace(/\.(tsx|ts|jsx)$/, '.js');
+          } catch (e: any) {
+            setTerminalLogs(prev => [...prev, `  [X] Erro ao transpilar ${file.Name}: ${e.message}`]);
+            continue;
+          }
+        }
+
+        const savePath = `${distPath}/${finalFileName}`;
+        setTerminalLogs(prev => [...prev, `  [+] Salvando em /dist/${finalFileName}...`]);
+        
+        if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+          // Mock
+        } else {
+          await saveFile(savePath, finalContent, activeSiteUrl);
+        }
+      }
+
+      // 3. Gera um index.html básico se não existir
+      const hasIndexHtml = files.some(f => f.Name === 'index.html');
+      if (!hasIndexHtml) {
+        setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Gerando index.html padrão...`]);
+        const defaultHtml = `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>DHL App - Build</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+    <!-- Script principal gerado -->
+    <script type="module" src="./App.js"></script>
+</body>
+</html>`;
+        if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+          // Mock
+        } else {
+          await saveFile(`${distPath}/index.html`, defaultHtml, activeSiteUrl);
+        }
+      }
+
+      setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] SUCESSO: Projeto compilado na pasta /dist.`]);
+      setBuildStatus('success');
+      loadPath(currentFolder, activeSiteUrl);
+      setTimeout(() => setBuildStatus('idle'), 3000);
+
     } catch (err: any) {
       console.error('[BROWSER-BUILD] Error:', err);
-      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] ERRO CRÍTICO: ${err.message}`]);
+      setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] ERRO CRÍTICO: ${err.message}`]);
       setBuildStatus('error');
-      setError(`Erro na Build: ${err.message}`);
     } finally {
       setExecutingCommand(false);
     }
@@ -490,12 +538,27 @@ export default function App() {
             <div className="text-[9px] font-mono text-white/30 truncate">
               {currentFolder.split('/').pop() || 'Root'}
             </div>
-            <button 
-              onClick={() => loadPath(currentFolder, activeSiteUrl)}
-              className="ml-auto p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
-            >
-              <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
-            </button>
+            <div className="flex items-center gap-1 ml-auto">
+              <button 
+                onClick={handleBrowserBuild}
+                disabled={executingCommand}
+                title="Build Completo (Gera /dist)"
+                className={`p-1.5 rounded transition-all flex items-center gap-1 group/btn ${
+                  buildStatus === 'success' ? 'bg-green-500/20 text-green-400' :
+                  buildStatus === 'building' ? 'bg-dhl-yellow/20 text-dhl-yellow animate-pulse' :
+                  'hover:bg-white/5 text-white/40 hover:text-dhl-yellow'
+                }`}
+              >
+                <Zap className={`w-3.5 h-3.5 ${buildStatus === 'building' ? 'animate-bounce' : ''}`} />
+                <span className="text-[9px] font-bold group-hover/btn:block hidden">BUILD</span>
+              </button>
+              <button 
+                onClick={() => loadPath(currentFolder, activeSiteUrl)}
+                className="p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
+              >
+                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto pt-2">
