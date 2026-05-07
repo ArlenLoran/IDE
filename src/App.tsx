@@ -31,6 +31,8 @@ import {
   saveFile, 
   createFile,
   getCurrentFolderPath, 
+  parseSpUrl,
+  spSiteUrl,
   hasSpContext 
 } from './services/sharepointService';
 
@@ -43,16 +45,31 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  
+  // Workspace Dynamic path state
   const [currentFolder, setCurrentFolder] = useState('');
   const [baseFolder, setBaseFolder] = useState('');
+  const [activeSiteUrl, setActiveSiteUrl] = useState('');
   
   // New file state
   const [isNewFileModalOpen, setIsNewFileModalOpen] = useState(false);
   const [newFileName, setNewFileName] = useState('');
 
+  // Workspace Settings
+  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
+  const [tempWorkspaceUrl, setTempWorkspaceUrl] = useState('');
+
   useEffect(() => {
-    if (!hasSpContext()) {
-      setError('SharePoint Context não detectado. Usando ambiente de demonstração.');
+    // Carrega workspace salvo do localstorage se existir
+    const savedSite = localStorage.getItem('dhl_sp_site');
+    const savedFolder = localStorage.getItem('dhl_sp_folder');
+
+    if (savedSite && savedFolder) {
+      setActiveSiteUrl(savedSite);
+      setBaseFolder(savedFolder);
+      loadPath(savedFolder, savedSite);
+    } else if (!hasSpContext()) {
+      setError('Ambiente de demonstração. Configure um workspace real no SharePoint.');
       setFiles([
         { Name: 'index.aspx', ServerRelativeUrl: '/site/index.aspx', Length: '4096' },
         { Name: 'sp-connector.ts', ServerRelativeUrl: '/site/sp-connector.ts', Length: '2048' },
@@ -64,18 +81,22 @@ export default function App() {
       const mockPath = '/sites/DHL-Supply-Chain';
       setCurrentFolder(mockPath);
       setBaseFolder(mockPath);
+      setActiveSiteUrl('https://tenant.sharepoint.com/sites/DHL');
     } else {
       const folder = getCurrentFolderPath();
+      const site = spSiteUrl();
       setBaseFolder(folder);
-      loadPath(folder);
+      setActiveSiteUrl(site);
+      loadPath(folder, site);
     }
   }, []);
 
-  const loadPath = async (path: string) => {
+  const loadPath = async (path: string, site?: string) => {
     setLoading(true);
     setCurrentFolder(path);
+    const targetSite = site || activeSiteUrl;
     try {
-      const result = await listItems(path);
+      const result = await listItems(path, targetSite);
       if (result.status) {
         setFiles(result.data.files);
         setFolders(result.data.folders);
@@ -94,7 +115,7 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const result = await getFileContent(file.ServerRelativeUrl);
+      const result = await getFileContent(file.ServerRelativeUrl, activeSiteUrl);
       if (result.status) {
         setCode(result.data);
       } else {
@@ -111,7 +132,7 @@ export default function App() {
     if (!selectedFile) return;
     setSaving(true);
     try {
-      const result = await saveFile(selectedFile.ServerRelativeUrl, code);
+      const result = await saveFile(selectedFile.ServerRelativeUrl, code, activeSiteUrl);
       if (!result.status) {
         setError(result.message);
       }
@@ -123,7 +144,7 @@ export default function App() {
   };
 
   const handleRun = () => {
-    const indexPath = `${currentFolder}/index.aspx`;
+    const indexPath = `${activeSiteUrl}${currentFolder}/index.aspx`;
     window.open(indexPath, '_blank');
   };
 
@@ -141,7 +162,7 @@ export default function App() {
     if (!newFileName) return;
     setSaving(true);
     try {
-      const result = await createFile(currentFolder, newFileName, '<!-- DHL New File -->');
+      const result = await createFile(currentFolder, newFileName, '<!-- DHL New File -->', activeSiteUrl);
       if (result.status) {
         setNewFileName('');
         setIsNewFileModalOpen(false);
@@ -154,6 +175,25 @@ export default function App() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const applyWorkspace = () => {
+    const { siteUrl, folderPath } = parseSpUrl(tempWorkspaceUrl);
+    if (!siteUrl || !folderPath) {
+      setError('URL Inválida. Use o formato: https://dpdhl.sharepoint.com/sites/NomeDoSite/Pasta');
+      return;
+    }
+    
+    setActiveSiteUrl(siteUrl);
+    setBaseFolder(folderPath);
+    setCurrentFolder(folderPath);
+    
+    localStorage.setItem('dhl_sp_site', siteUrl);
+    localStorage.setItem('dhl_sp_folder', folderPath);
+    
+    loadPath(folderPath, siteUrl);
+    setIsWorkspaceModalOpen(false);
+    setError(null);
   };
 
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -199,11 +239,17 @@ export default function App() {
           
           <div className="h-6 w-px bg-black/10 mx-1" />
           
-          <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-black/5 rounded text-[11px] font-medium text-black/70">
-            <Folder className="w-3 h-3 translate-y-[1px]" />
-            <span className="opacity-60">Working Path:</span>
-            <span className="font-bold text-black truncate max-w-[200px]">{currentFolder || 'Root'}</span>
-          </div>
+          <button 
+            onClick={() => {
+              setTempWorkspaceUrl(`${activeSiteUrl}${currentFolder}`);
+              setIsWorkspaceModalOpen(true);
+            }}
+            className="hidden md:flex items-center gap-2 px-3 py-1 bg-black/5 rounded text-[11px] font-medium text-black/70 hover:bg-black/10 transition-all cursor-pointer group"
+          >
+            <Folder className="w-3 h-3 translate-y-[1px] group-hover:text-dhl-red transition-colors" />
+            <span className="opacity-60">Workspace:</span>
+            <span className="font-bold text-black truncate max-w-[250px]">{currentFolder || 'Configurar...'}</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-3">
@@ -333,9 +379,9 @@ export default function App() {
               <div className="text-[10px] font-extrabold text-white/40 uppercase tracking-[0.2em] mb-3">SP Resources</div>
               <div className="space-y-2">
                 <div className="bg-black/20 rounded-lg p-3 border border-white/5">
-                  <div className="text-[9px] text-white/50 mb-1 font-mono uppercase">Request Digest</div>
-                  <div className="text-[10px] text-blue-300 break-all font-mono leading-tight bg-black/40 p-1.5 rounded border border-white/5">
-                    {hasSpContext() ? '0x' + Math.random().toString(16).slice(2, 20).toUpperCase() : 'ENV_DEV_MOCK'}
+                  <div className="text-[9px] text-white/50 mb-1 font-mono uppercase">Site URL</div>
+                  <div className="text-[9px] text-blue-300 break-all font-mono leading-tight bg-black/40 p-1.5 rounded border border-white/5">
+                    {activeSiteUrl}
                   </div>
                 </div>
                 <button className="w-full text-left px-3 py-2 rounded border border-white/5 hover:bg-white/5 text-[11px] font-bold text-white/60 transition-colors flex items-center justify-between">
@@ -429,11 +475,11 @@ export default function App() {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <button 
-                      onClick={() => setIsSidebarOpen(true)}
+                      onClick={() => setIsWorkspaceModalOpen(true)}
                       className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 hover:border-dhl-yellow/30 transition-all text-left group"
                     >
                       <div className="text-[10px] font-black text-white/40 uppercase mb-2">Workspace</div>
-                      <div className="text-xs font-bold flex items-center gap-2">Abrir Explorer <ChevronRight className="w-3 h-3" /></div>
+                      <div className="text-xs font-bold flex items-center gap-2">Trocar Pasta <ChevronRight className="w-3 h-3" /></div>
                     </button>
                     <button 
                       onClick={handleRun}
@@ -554,6 +600,63 @@ export default function App() {
                       className="flex-1 py-2 bg-dhl-red rounded-lg text-xs font-bold text-white hover:brightness-110 transition-all shadow-lg uppercase disabled:opacity-50"
                     >
                       {saving ? 'Criando...' : 'Criar Arquivo'}
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
+          {/* Workspace Modal */}
+          <AnimatePresence>
+            {isWorkspaceModalOpen && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <motion.div 
+                  initial={{ scale: 0.9, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.9, opacity: 0 }}
+                  className="bg-dhl-sidebar border border-white/10 w-full max-w-xl rounded-2xl shadow-2xl overflow-hidden"
+                >
+                  <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between bg-dhl-red">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wide">
+                      <FolderOpen className="w-4 h-4" />
+                      Configurar Workspace Dinâmico
+                    </h3>
+                    <button onClick={() => setIsWorkspaceModalOpen(false)} className="text-white/60 hover:text-white transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-8 space-y-6">
+                    <div>
+                      <label className="block text-[10px] font-black text-white/40 uppercase mb-2 tracking-widest">URL do SharePoint ou Pasta</label>
+                      <input 
+                        type="text" 
+                        value={tempWorkspaceUrl}
+                        onChange={(e) => setTempWorkspaceUrl(e.target.value)}
+                        autoFocus
+                        placeholder="https://dpdhl.sharepoint.com/sites/SeuSite/Documentos/SuaPasta"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-4 text-white text-sm outline-none focus:border-dhl-yellow/50 transition-all font-mono"
+                        onKeyDown={(e) => e.key === 'Enter' && applyWorkspace()}
+                      />
+                    </div>
+                    <div className="bg-dhl-yellow/5 border border-dhl-yellow/10 p-4 rounded-xl space-y-2">
+                       <p className="text-[11px] text-dhl-yellow font-bold uppercase mb-1">Dica de Uso:</p>
+                       <p className="text-[11px] text-white/60 leading-relaxed">
+                         Cole o link direto da barra de endereço do navegador quando estiver visualizando a pasta no SharePoint. O app irá extrair automaticamente o Site e o Path da pasta.
+                       </p>
+                    </div>
+                  </div>
+                  <div className="px-6 py-4 bg-black/10 border-t border-white/5 flex gap-3">
+                    <button 
+                      onClick={() => setIsWorkspaceModalOpen(false)}
+                      className="flex-1 py-3 rounded-lg text-xs font-bold text-white/40 hover:text-white transition-all uppercase"
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      onClick={applyWorkspace}
+                      className="flex-1 py-3 bg-dhl-yellow rounded-lg text-xs font-bold text-black hover:brightness-110 transition-all shadow-lg uppercase"
+                    >
+                      Conectar Workspace
                     </button>
                   </div>
                 </motion.div>

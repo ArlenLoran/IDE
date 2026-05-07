@@ -28,18 +28,52 @@ export function hasSpContext(): boolean {
 }
 
 export function spSiteUrl(): string {
-  return getContext().siteAbsoluteUrl;
+  try {
+    return getContext().siteAbsoluteUrl;
+  } catch {
+    return '';
+  }
 }
 
 export function spWebRelUrl(): string {
-  return getContext().webServerRelativeUrl;
+  try {
+    return getContext().webServerRelativeUrl;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Função utilitária para extrair Site URL e Relative Folder Path de uma URL completa
+ */
+export function parseSpUrl(fullUrl: string): { siteUrl: string; folderPath: string } {
+  try {
+    const url = new URL(fullUrl);
+    const origin = url.origin;
+    const pathname = url.pathname;
+    
+    // Procura por /sites/NomeDoSite ou /teams/NomeDoSite
+    const siteMatch = pathname.match(/(\/(sites|teams)\/[^/]+)/);
+    const siteUrlBase = siteMatch ? origin + siteMatch[1] : origin;
+    
+    // O resto é o path da pasta (removendo Forms/AllItems.aspx se houver)
+    let folderPath = pathname.replace(/\/Forms\/.*$/, '').replace(/\/AllItems\.aspx$/, '');
+    
+    return { siteUrl: siteUrlBase, folderPath };
+  } catch {
+    return { siteUrl: '', folderPath: '' };
+  }
 }
 
 // Obtém o path da pasta atual onde o app está rodando
 export function getCurrentFolderPath(): string {
-  const ctx = getContext();
-  const path = ctx.serverRequestPath || '';
-  return path.substring(0, path.lastIndexOf('/'));
+  try {
+    const ctx = getContext();
+    const path = ctx.serverRequestPath || '';
+    return path.substring(0, path.lastIndexOf('/'));
+  } catch {
+    return '';
+  }
 }
 
 async function parseSpError(resp: Response): Promise<string> {
@@ -56,32 +90,41 @@ async function parseSpError(resp: Response): Promise<string> {
   }
 }
 
-async function refreshDigest(): Promise<string> {
-  const ctx = getContext();
-  // No SharePoint clássico muitas vezes o digest já está na página
-  if (ctx.formDigestValue) return ctx.formDigestValue;
+async function refreshDigest(siteUrl?: string): Promise<string> {
+  try {
+    const ctx = window._spPageContextInfo;
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    
+    // Se for o mesmo site, podemos tentar usar o da página
+    if (ctx && targetSiteUrl === ctx.siteAbsoluteUrl && ctx.formDigestValue) {
+      return ctx.formDigestValue;
+    }
 
-  const url = `${spSiteUrl()}/_api/contextinfo`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json; odata=verbose',
-      'Content-Type': 'application/json; odata=verbose'
-    },
-    credentials: 'same-origin'
-  });
-  if (!resp.ok) throw new Error(await parseSpError(resp));
-  const data = await resp.json();
-  return data?.d?.GetContextWebInformation?.FormDigestValue;
+    const url = `${targetSiteUrl}/_api/contextinfo`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json; odata=verbose',
+        'Content-Type': 'application/json; odata=verbose'
+      },
+      credentials: 'same-origin'
+    });
+    if (!resp.ok) throw new Error(await parseSpError(resp));
+    const data = await resp.json();
+    return data?.d?.GetContextWebInformation?.FormDigestValue;
+  } catch (err: any) {
+    throw new Error('Falha ao obter Request Digest: ' + err.message);
+  }
 }
 
 /**
  * Lista os arquivos na pasta atual
  */
-export async function listItems(folderPath: string): Promise<SpResult<{ files: any[], folders: any[] }>> {
+export async function listItems(folderPath: string, siteUrl?: string): Promise<SpResult<{ files: any[], folders: any[] }>> {
   try {
-    const filesUrl = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files?$select=Name,ServerRelativeUrl,TimeLastModified,Length`;
-    const foldersUrl = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Folders?$select=Name,ServerRelativeUrl`;
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    const filesUrl = `${targetSiteUrl}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files?$select=Name,ServerRelativeUrl,TimeLastModified,Length`;
+    const foldersUrl = `${targetSiteUrl}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Folders?$select=Name,ServerRelativeUrl`;
 
     const [filesResp, foldersResp] = await Promise.all([
       fetch(filesUrl, { method: 'GET', headers: { Accept: 'application/json; odata=verbose' }, credentials: 'same-origin' }),
@@ -109,10 +152,11 @@ export async function listItems(folderPath: string): Promise<SpResult<{ files: a
 /**
  * Cria um novo arquivo
  */
-export async function createFile(folderPath: string, fileName: string, content: string = ''): Promise<SpResult<any>> {
+export async function createFile(folderPath: string, fileName: string, content: string = '', siteUrl?: string): Promise<SpResult<any>> {
   try {
-    const digest = await refreshDigest();
-    const url = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files/Add(url='${fileName}',overwrite=false)`;
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    const digest = await refreshDigest(targetSiteUrl);
+    const url = `${targetSiteUrl}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files/Add(url='${fileName}',overwrite=false)`;
     
     const resp = await fetch(url, {
       method: 'POST',
@@ -135,9 +179,10 @@ export async function createFile(folderPath: string, fileName: string, content: 
 /**
  * Obtém o conteúdo de um arquivo (texto)
  */
-export async function getFileContent(fileUrl: string): Promise<SpResult<string>> {
+export async function getFileContent(fileUrl: string, siteUrl?: string): Promise<SpResult<string>> {
   try {
-    const url = `${spSiteUrl()}/_api/web/getFileByServerRelativeUrl('${fileUrl}')/$value`;
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    const url = `${targetSiteUrl}/_api/web/getFileByServerRelativeUrl('${fileUrl}')/$value`;
     const resp = await fetch(url, {
       method: 'GET',
       credentials: 'same-origin'
@@ -153,10 +198,11 @@ export async function getFileContent(fileUrl: string): Promise<SpResult<string>>
 /**
  * Salva o conteúdo de um arquivo
  */
-export async function saveFile(fileUrl: string, content: string): Promise<SpResult<boolean>> {
+export async function saveFile(fileUrl: string, content: string, siteUrl?: string): Promise<SpResult<boolean>> {
   try {
-    const digest = await refreshDigest();
-    const url = `${spSiteUrl()}/_api/web/getFileByServerRelativeUrl('${fileUrl}')/$value`;
+    const targetSiteUrl = siteUrl || spSiteUrl();
+    const digest = await refreshDigest(targetSiteUrl);
+    const url = `${targetSiteUrl}/_api/web/getFileByServerRelativeUrl('${fileUrl}')/$value`;
     
     const resp = await fetch(url, {
       method: 'POST',
@@ -172,7 +218,7 @@ export async function saveFile(fileUrl: string, content: string): Promise<SpResu
         // Se falhar o PUT direto, tentamos via Add em modo overwrite
         const folderPath = fileUrl.substring(0, fileUrl.lastIndexOf('/'));
         const fileName = fileUrl.substring(fileUrl.lastIndexOf('/') + 1);
-        const addUrl = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files/Add(url='${fileName}',overwrite=true)`;
+        const addUrl = `${targetSiteUrl}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files/Add(url='${fileName}',overwrite=true)`;
         
         const respAdd = await fetch(addUrl, {
             method: 'POST',
