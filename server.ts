@@ -1,7 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { exec } from "child_process";
+import { spawn } from "child_process";
 
 async function startServer() {
   const app = express();
@@ -9,25 +9,50 @@ async function startServer() {
 
   app.use(express.json());
 
+  // In-memory logs for terminal tasks
+  const tasks: Record<string, { logs: string[], status: 'running' | 'completed' | 'failed' }> = {};
+
   // API para o Terminal
   app.post("/api/terminal/run", (req, res) => {
     const { command } = req.body;
     
-    // Lista de comandos permitidos por segurança
-    const allowedCommands = ["npm install", "npm run build", "ls -la", "pwd"];
-    if (!allowedCommands.includes(command)) {
+    const allowedCommands = ["npm install", "npm run build", "ls -la", "pwd", "npm list"];
+    const baseCommand = command.split(' ')[0] + ' ' + (command.split(' ')[1] || '');
+    
+    // Verificação relaxada para permitir argumentos extras se necessário
+    if (!allowedCommands.some(c => command.startsWith(c))) {
       return res.status(403).json({ error: "Comando não permitido" });
     }
 
-    console.log(`Executando: ${command}`);
+    const taskId = Math.random().toString(36).substring(7);
+    tasks[taskId] = { logs: [`Iniciando: ${command}`], status: 'running' };
+
+    console.log(`Executando Tarefa ${taskId}: ${command}`);
     
-    exec(command, (error, stdout, stderr) => {
-      res.json({
-        stdout: stdout || "",
-        stderr: stderr || "",
-        error: error ? error.message : null
-      });
+    const [cmd, ...args] = command.split(' ');
+    const child = spawn(cmd, args, { shell: true });
+
+    child.stdout.on('data', (data) => {
+      tasks[taskId].logs.push(data.toString());
     });
+
+    child.stderr.on('data', (data) => {
+      tasks[taskId].logs.push(`STDERR: ${data.toString()}`);
+    });
+
+    child.on('close', (code) => {
+      tasks[taskId].status = code === 0 ? 'completed' : 'failed';
+      tasks[taskId].logs.push(`Processo finalizado com código ${code}`);
+    });
+
+    res.json({ taskId });
+  });
+
+  app.get("/api/terminal/logs/:taskId", (req, res) => {
+    const { taskId } = req.params;
+    const task = tasks[taskId];
+    if (!task) return res.status(404).json({ error: "Tarefa não encontrada" });
+    res.json(task);
   });
 
   // Vite middleware para desenvolvimento

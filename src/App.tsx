@@ -201,9 +201,11 @@ export default function App() {
   const [executingCommand, setExecutingCommand] = useState(false);
 
   const runCommand = async (command: string) => {
+    if (executingCommand) return;
+    
     setExecutingCommand(true);
     setIsTerminalOpen(true);
-    setTerminalLogs(prev => [...prev, `> ${command}`]);
+    setTerminalLogs([]); // Clear previous logs
     
     try {
       const response = await fetch('/api/terminal/run', {
@@ -211,14 +213,32 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command })
       });
-      const data = await response.json();
+      const { taskId } = await response.json();
       
-      if (data.stdout) setTerminalLogs(prev => [...prev, data.stdout]);
-      if (data.stderr) setTerminalLogs(prev => [...prev, `ERROR: ${data.stderr}`]);
-      if (data.error) setTerminalLogs(prev => [...prev, `CRITICAL: ${data.error}`]);
+      if (!taskId) throw new Error('Não foi possível iniciar a tarefa');
+
+      // Polling function
+      const poll = async () => {
+        try {
+          const res = await fetch(`/api/terminal/logs/${taskId}`);
+          const data = await res.json();
+          
+          setTerminalLogs(data.logs);
+          
+          if (data.status === 'running') {
+            setTimeout(poll, 2000);
+          } else {
+            setExecutingCommand(false);
+          }
+        } catch (err) {
+          console.error('Polling error:', err);
+          setExecutingCommand(false);
+        }
+      };
+
+      poll();
     } catch (err: any) {
       setTerminalLogs(prev => [...prev, `FAILED: ${err.message}`]);
-    } finally {
       setExecutingCommand(false);
     }
   };
