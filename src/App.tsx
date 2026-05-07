@@ -17,19 +17,26 @@ import {
   ChevronDown,
   Info,
   GitBranch,
+  Plus,
+  ArrowLeft,
+  FolderOpen,
+  FilePlus,
+  X,
   CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  listFiles, 
+  listItems, 
   getFileContent, 
   saveFile, 
+  createFile,
   getCurrentFolderPath, 
   hasSpContext 
 } from './services/sharepointService';
 
 export default function App() {
   const [files, setFiles] = useState<any[]>([]);
+  const [folders, setFolders] = useState<any[]>([]);
   const [selectedFile, setSelectedFile] = useState<any>(null);
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -37,6 +44,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [currentFolder, setCurrentFolder] = useState('');
+  const [baseFolder, setBaseFolder] = useState('');
+  
+  // New file state
+  const [isNewFileModalOpen, setIsNewFileModalOpen] = useState(false);
+  const [newFileName, setNewFileName] = useState('');
 
   useEffect(() => {
     if (!hasSpContext()) {
@@ -44,22 +56,29 @@ export default function App() {
       setFiles([
         { Name: 'index.aspx', ServerRelativeUrl: '/site/index.aspx', Length: '4096' },
         { Name: 'sp-connector.ts', ServerRelativeUrl: '/site/sp-connector.ts', Length: '2048' },
-        { Name: 'DHL-styles.css', ServerRelativeUrl: '/site/DHL-styles.css', Length: '1024' },
       ]);
-      setCurrentFolder('/sites/DHL-Supply-Chain');
+      setFolders([
+        { Name: 'components', ServerRelativeUrl: '/site/components' },
+        { Name: 'assets', ServerRelativeUrl: '/site/assets' }
+      ]);
+      const mockPath = '/sites/DHL-Supply-Chain';
+      setCurrentFolder(mockPath);
+      setBaseFolder(mockPath);
     } else {
-      loadFiles();
+      const folder = getCurrentFolderPath();
+      setBaseFolder(folder);
+      loadPath(folder);
     }
   }, []);
 
-  const loadFiles = async () => {
+  const loadPath = async (path: string) => {
     setLoading(true);
+    setCurrentFolder(path);
     try {
-      const folder = getCurrentFolderPath();
-      setCurrentFolder(folder);
-      const result = await listFiles(folder);
+      const result = await listItems(path);
       if (result.status) {
-        setFiles(result.data);
+        setFiles(result.data.files);
+        setFolders(result.data.folders);
       } else {
         setError(result.message);
       }
@@ -108,6 +127,62 @@ export default function App() {
     window.open(indexPath, '_blank');
   };
 
+  const handleSaveFolder = (folder: any) => {
+    loadPath(folder.ServerRelativeUrl);
+  };
+
+  const navigateUp = () => {
+    if (currentFolder === baseFolder) return;
+    const parentPath = currentFolder.substring(0, currentFolder.lastIndexOf('/'));
+    loadPath(parentPath);
+  };
+
+  const handleCreateFile = async () => {
+    if (!newFileName) return;
+    setSaving(true);
+    try {
+      const result = await createFile(currentFolder, newFileName, '<!-- DHL New File -->');
+      if (result.status) {
+        setNewFileName('');
+        setIsNewFileModalOpen(false);
+        loadPath(currentFolder);
+      } else {
+        setError(result.message);
+      }
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
+  const [executingCommand, setExecutingCommand] = useState(false);
+
+  const runCommand = async (command: string) => {
+    setExecutingCommand(true);
+    setIsTerminalOpen(true);
+    setTerminalLogs(prev => [...prev, `> ${command}`]);
+    
+    try {
+      const response = await fetch('/api/terminal/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command })
+      });
+      const data = await response.json();
+      
+      if (data.stdout) setTerminalLogs(prev => [...prev, data.stdout]);
+      if (data.stderr) setTerminalLogs(prev => [...prev, `ERROR: ${data.stderr}`]);
+      if (data.error) setTerminalLogs(prev => [...prev, `CRITICAL: ${data.error}`]);
+    } catch (err: any) {
+      setTerminalLogs(prev => [...prev, `FAILED: ${err.message}`]);
+    } finally {
+      setExecutingCommand(false);
+    }
+  };
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-dhl-dark text-slate-300 font-sans select-none">
       {/* Header - Professional Polish Theme */}
@@ -125,9 +200,9 @@ export default function App() {
           <div className="h-6 w-px bg-black/10 mx-1" />
           
           <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-black/5 rounded text-[11px] font-medium text-black/70">
-            <Folder className="w-3 h-3" />
-            <span className="opacity-60">Site Path:</span>
-            <span className="font-bold text-black">{currentFolder || 'Root'}</span>
+            <Folder className="w-3 h-3 translate-y-[1px]" />
+            <span className="opacity-60">Working Path:</span>
+            <span className="font-bold text-black truncate max-w-[200px]">{currentFolder || 'Root'}</span>
           </div>
         </div>
 
@@ -168,11 +243,41 @@ export default function App() {
               <span className="w-1.5 h-1.5 bg-dhl-yellow rounded-full" />
               File Explorer
             </div>
+            <div className="flex items-center gap-1">
+              <button 
+                onClick={() => setIsNewFileModalOpen(true)}
+                title="Novo Arquivo"
+                className="p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-dhl-yellow transition-colors"
+                id="btn-new-file"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => setIsSidebarOpen(false)}
+                className="p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          {/* Navigation Bar */}
+          <div className="px-2 py-1 flex items-center gap-1 bg-black/5 border-b border-white/5 shrink-0">
             <button 
-              onClick={() => setIsSidebarOpen(false)}
-              className="p-1 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
+              onClick={navigateUp}
+              disabled={currentFolder === baseFolder}
+              className={`p-1.5 rounded transition-colors ${currentFolder === baseFolder ? 'opacity-20 pointer-events-none' : 'hover:bg-white/5 text-white/60'}`}
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ArrowLeft className="w-3.5 h-3.5" />
+            </button>
+            <div className="text-[9px] font-mono text-white/30 truncate">
+              {currentFolder.split('/').pop() || 'Root'}
+            </div>
+            <button 
+              onClick={() => loadPath(currentFolder)}
+              className="ml-auto p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
+            >
+              <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
             </button>
           </div>
 
@@ -184,9 +289,22 @@ export default function App() {
               </div>
             ) : (
               <div className="px-2 space-y-0.5">
+                {/* Folders */}
+                {folders.map((folder, idx) => (
+                  <button
+                    key={`folder-${idx}`}
+                    onClick={() => handleSaveFolder(folder)}
+                    className="w-full text-left px-3 py-1.5 rounded flex items-center gap-3 group transition-all text-slate-400 font-medium hover:bg-white/5"
+                  >
+                    <Folder className="w-4 h-4 shrink-0 text-dhl-yellow/60 group-hover:text-dhl-yellow" />
+                    <span className="text-sm truncate select-none">{folder.Name}</span>
+                  </button>
+                ))}
+
+                {/* Files */}
                 {files.map((file, idx) => (
                   <button
-                    key={idx}
+                    key={`file-${idx}`}
                     onClick={() => handleSelectFile(file)}
                     className={`w-full text-left px-3 py-1.5 rounded flex items-center gap-3 group transition-all relative ${
                       selectedFile?.ServerRelativeUrl === file.ServerRelativeUrl 
@@ -202,6 +320,12 @@ export default function App() {
                     <span className="text-sm truncate select-none">{file.Name}</span>
                   </button>
                 ))}
+
+                {files.length === 0 && folders.length === 0 && !loading && (
+                  <div className="text-center py-8 opacity-20 text-[10px] uppercase font-black">
+                    Pasta Vazia
+                  </div>
+                )}
               </div>
             )}
 
@@ -239,12 +363,20 @@ export default function App() {
         <section className="flex-1 flex flex-col bg-dhl-dark min-w-0">
           {/* Breadcrumbs / Editor Bar */}
           <div className="h-9 bg-black/30 border-b border-white/5 px-4 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2 text-[11px] text-white/40 font-medium">
-              <span className="hover:text-white/80 cursor-pointer">src</span>
-              <ChevronRight className="w-3 h-3 opacity-30" />
-              <span className="hover:text-white/80 cursor-pointer">core</span>
-              <ChevronRight className="w-3 h-3 opacity-30" />
-              <span className="text-white/90">{selectedFile?.Name || 'welcome'}</span>
+            <div className="flex items-center gap-2 text-[11px] text-white/40 font-medium overflow-hidden whitespace-nowrap">
+              <span className="hover:text-white/80 cursor-pointer shrink-0" onClick={() => loadPath(baseFolder)}>root</span>
+              {currentFolder.replace(baseFolder, '').split('/').filter(Boolean).map((part, i) => (
+                <React.Fragment key={i}>
+                  <ChevronRight className="w-3 h-3 opacity-30 shrink-0" />
+                  <span className="hover:text-white/80 cursor-pointer shrink-0">{part}</span>
+                </React.Fragment>
+              ))}
+              {selectedFile && (
+                <>
+                  <ChevronRight className="w-3 h-3 opacity-30 shrink-0" />
+                  <span className="text-white/90 shrink-0 truncate">{selectedFile.Name}</span>
+                </>
+              )}
             </div>
             
             {hasSpContext() && (
@@ -268,7 +400,7 @@ export default function App() {
               <div className="flex h-full">
                 {/* Line numbers simulation */}
                 <div className="w-12 bg-black/10 border-r border-white/5 py-6 flex flex-col items-center text-[11px] text-white/20 font-mono select-none overflow-hidden leading-[1.625rem]">
-                  {Array.from({ length: Math.min(code.split('\n').length + 5, 100) }).map((_, i) => (
+                  {Array.from({ length: 100 }).map((_, i) => (
                     <div key={i}>{i + 1}</div>
                   ))}
                 </div>
@@ -314,7 +446,120 @@ export default function App() {
                 </motion.div>
               </div>
             )}
+
+            {/* Terminal Panel */}
+            <AnimatePresence>
+              {isTerminalOpen && (
+                <motion.div 
+                  initial={{ height: 0 }}
+                  animate={{ height: 200 }}
+                  exit={{ height: 0 }}
+                  className="absolute bottom-0 left-0 right-0 bg-dhl-sidebar border-t border-white/10 z-40 flex flex-col shadow-[0_-10px_30px_rgba(0,0,0,0.5)]"
+                >
+                  <div className="h-8 bg-black/40 px-4 flex items-center justify-between shrink-0">
+                    <div className="flex items-center gap-4">
+                      <div className="text-[10px] font-black text-white/40 uppercase tracking-[0.2em] flex items-center gap-2">
+                        <Terminal className="w-3 h-3 text-dhl-yellow" />
+                        Terminal Output
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button 
+                          onClick={() => runCommand('npm install')}
+                          disabled={executingCommand}
+                          className="text-[9px] font-bold text-blue-400 hover:text-white transition-colors uppercase"
+                        >
+                          NPM INSTALL
+                        </button>
+                        <button 
+                          onClick={() => runCommand('npm run build')}
+                          disabled={executingCommand}
+                          className="text-[9px] font-bold text-green-400 hover:text-white transition-colors uppercase"
+                        >
+                          NPM BUILD
+                        </button>
+                      </div>
+                    </div>
+                    <button onClick={() => setIsTerminalOpen(false)} className="text-white/20 hover:text-white">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex-1 p-4 overflow-y-auto font-mono text-[11px] leading-relaxed select-text space-y-1 scrollbar-thin scrollbar-thumb-white/10">
+                    {terminalLogs.length === 0 ? (
+                      <span className="opacity-20 italic">Aguardando comandos...</span>
+                    ) : (
+                      terminalLogs.map((log, i) => (
+                        <div key={i} className={log.startsWith('>') ? 'text-dhl-yellow font-bold mt-2' : log.includes('ERROR') ? 'text-red-400' : 'text-slate-300'}>
+                          {log}
+                        </div>
+                      ))
+                    )}
+                    {executingCommand && (
+                      <div className="flex items-center gap-2 text-white/50 animate-pulse mt-2">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>Processando...</span>
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
+
+          {/* New File Modal */}
+          <AnimatePresence>
+            {isNewFileModalOpen && (
+              <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+                <motion.div 
+                  initial={{ scale: 0.9, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  exit={{ scale: 0.9, opacity: 0 }}
+                  className="bg-dhl-sidebar border border-white/10 w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden"
+                >
+                  <div className="px-6 py-4 border-b border-white/5 flex items-center justify-between">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 italic uppercase italic">
+                      <FilePlus className="w-4 h-4 text-dhl-yellow" />
+                      Novo Arquivo
+                    </h3>
+                    <button onClick={() => setIsNewFileModalOpen(false)} className="text-white/30 hover:text-white transition-colors">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="p-6 space-y-4">
+                    <div>
+                      <label className="block text-[10px] font-black text-white/40 uppercase mb-2">Nome do Arquivo</label>
+                      <input 
+                        type="text" 
+                        value={newFileName}
+                        onChange={(e) => setNewFileName(e.target.value)}
+                        autoFocus
+                        placeholder="exemplo.aspx"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-dhl-yellow/50 transition-all"
+                        onKeyDown={(e) => e.key === 'Enter' && handleCreateFile()}
+                      />
+                    </div>
+                    <div className="text-[10px] text-white/30 italic">
+                      O arquivo será criado em: <span className="text-white/50">{currentFolder}</span>
+                    </div>
+                  </div>
+                  <div className="px-6 py-4 bg-black/10 border-t border-white/5 flex gap-3">
+                    <button 
+                      onClick={() => setIsNewFileModalOpen(false)}
+                      className="flex-1 py-2 rounded-lg text-xs font-bold text-white/60 hover:bg-white/5 transition-all uppercase"
+                    >
+                      Cancelar
+                    </button>
+                    <button 
+                      onClick={handleCreateFile}
+                      disabled={!newFileName || saving}
+                      className="flex-1 py-2 bg-dhl-red rounded-lg text-xs font-bold text-white hover:brightness-110 transition-all shadow-lg uppercase disabled:opacity-50"
+                    >
+                      {saving ? 'Criando...' : 'Criar Arquivo'}
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
+            )}
+          </AnimatePresence>
         </section>
       </div>
 
@@ -325,6 +570,13 @@ export default function App() {
             <CheckCircle2 className="w-3 h-3 text-green-500" />
             <span>Ready</span>
           </div>
+          <button 
+            onClick={() => setIsTerminalOpen(!isTerminalOpen)}
+            className="flex items-center gap-2 h-full px-2 hover:bg-white/5 cursor-pointer transition-colors"
+          >
+            <Terminal className="w-3 h-3 text-dhl-yellow" />
+            <span>Terminal</span>
+          </button>
           <div className="flex items-center gap-2 h-full px-2 hover:bg-white/5 cursor-pointer">
             <GitBranch className="w-3 h-3" />
             <span>master*</span>

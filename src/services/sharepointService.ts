@@ -78,17 +78,55 @@ async function refreshDigest(): Promise<string> {
 /**
  * Lista os arquivos na pasta atual
  */
-export async function listFiles(folderPath: string): Promise<SpResult<any[]>> {
+export async function listItems(folderPath: string): Promise<SpResult<{ files: any[], folders: any[] }>> {
   try {
-    const url = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files?$select=Name,ServerRelativeUrl,TimeLastModified,Length`;
+    const filesUrl = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files?$select=Name,ServerRelativeUrl,TimeLastModified,Length`;
+    const foldersUrl = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Folders?$select=Name,ServerRelativeUrl`;
+
+    const [filesResp, foldersResp] = await Promise.all([
+      fetch(filesUrl, { method: 'GET', headers: { Accept: 'application/json; odata=verbose' }, credentials: 'same-origin' }),
+      fetch(foldersUrl, { method: 'GET', headers: { Accept: 'application/json; odata=verbose' }, credentials: 'same-origin' })
+    ]);
+
+    if (!filesResp.ok) return { status: false, message: await parseSpError(filesResp) };
+    if (!foldersResp.ok) return { status: false, message: await parseSpError(foldersResp) };
+
+    const filesData = await filesResp.json();
+    const foldersData = await foldersResp.json();
+
+    return { 
+      status: true, 
+      data: { 
+        files: filesData?.d?.results || [], 
+        folders: foldersData?.d?.results?.filter((f: any) => f.Name !== 'Forms') || [] 
+      } 
+    };
+  } catch (error: any) {
+    return { status: false, message: error.message };
+  }
+}
+
+/**
+ * Cria um novo arquivo
+ */
+export async function createFile(folderPath: string, fileName: string, content: string = ''): Promise<SpResult<any>> {
+  try {
+    const digest = await refreshDigest();
+    const url = `${spSiteUrl()}/_api/web/getFolderByServerRelativeUrl('${folderPath}')/Files/Add(url='${fileName}',overwrite=false)`;
+    
     const resp = await fetch(url, {
-      method: 'GET',
-      headers: { Accept: 'application/json; odata=verbose' },
+      method: 'POST',
+      headers: { 
+        'X-RequestDigest': digest,
+        'Accept': 'application/json; odata=verbose'
+      },
+      body: content,
       credentials: 'same-origin'
     });
+
     if (!resp.ok) return { status: false, message: await parseSpError(resp) };
     const data = await resp.json();
-    return { status: true, data: data?.d?.results || [] };
+    return { status: true, data: data?.d };
   } catch (error: any) {
     return { status: false, message: error.message };
   }
