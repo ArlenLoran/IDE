@@ -247,33 +247,56 @@ export default function App() {
 
   // Build via Browser (Sem Backend)
   const handleBrowserBuild = async () => {
-    if (!selectedFile) return;
+    console.log('[BROWSER-BUILD] Clicked');
+    if (!selectedFile) {
+       setError("Por favor, selecione um arquivo no editor antes de compilar.");
+       return;
+    }
+    
+    if (!code || code.trim() === '') {
+       setError("O arquivo está vazio. Escreva algum código antes de compilar.");
+       return;
+    }
+
     setExecutingCommand(true);
+    setBuildStatus('building');
     setIsTerminalOpen(true);
-    setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Iniciando compilação de ${selectedFile.Name}...`]);
+    setTerminalLogs(prev => [...prev, `> [BROWSER-BUILD] Iniciando compilação de ${selectedFile.Name}...`]);
     
     try {
+      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Aplicando transformações Sucrase (typescript, jsx, imports)...`]);
+      
       // Transpilação TSX/TS para JS usando Sucrase (100% Client-side)
       const compiled = transform(code, {
         transforms: ['typescript', 'jsx', 'imports'],
         production: true,
       });
 
+      if (!compiled || !compiled.code) {
+        throw new Error("A compilação retornou um resultado vazio.");
+      }
+
       const jsFileName = selectedFile.Name.replace(/\.(tsx|ts|jsx)$/, '.js');
-      const jsFileUrl = `${currentFolder}/${jsFileName}`;
+      const finalJsName = jsFileName.endsWith('.js') ? jsFileName : jsFileName + '.js';
+      const jsFileUrl = `${currentFolder}/${finalJsName}`;
       
-      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Código transformado com sucesso. Salavando ${jsFileName}...`]);
+      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Sucesso! Salvando arquivo em: ${jsFileUrl}`]);
       
       const saveResult = await saveFile(jsFileUrl, compiled.code, activeSiteUrl);
       
       if (saveResult.status) {
-        setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] SUCESSO: Arquivo ${jsFileName} gerado e salvo no SharePoint.`]);
-        loadPath(currentFolder, activeSiteUrl); // Atualiza lista
+        setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] SUCESSO: Arquivo ${finalJsName} persistido no SharePoint.`]);
+        setBuildStatus('success');
+        loadPath(currentFolder, activeSiteUrl);
+        setTimeout(() => setBuildStatus('idle'), 3000);
       } else {
-        throw new Error(saveResult.message);
+        throw new Error(saveResult.message || "Erro desconhecido ao salvar.");
       }
     } catch (err: any) {
-      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] ERRO: ${err.message}`]);
+      console.error('[BROWSER-BUILD] Error:', err);
+      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] ERRO CRÍTICO: ${err.message}`]);
+      setBuildStatus('error');
+      setError(`Erro na Build: ${err.message}`);
     } finally {
       setExecutingCommand(false);
     }
@@ -282,6 +305,7 @@ export default function App() {
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const [executingCommand, setExecutingCommand] = useState(false);
+  const [buildStatus, setBuildStatus] = useState<'idle' | 'building' | 'success' | 'error'>('idle');
 
   const runCommand = async (command: string) => {
     if (executingCommand) return;
@@ -354,6 +378,25 @@ export default function App() {
     }
   };
 
+  const [copySuccess, setCopySuccess] = useState(false);
+
+  const copyIdeUrl = () => {
+    navigator.clipboard.writeText(window.location.origin);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2000);
+  };
+
+  const openWorkspaceModal = () => {
+    setTempWorkspaceUrl(`${activeSiteUrl}${currentFolder}`);
+    // Se a URL do IDE estiver vazia, tenta sugerir a origem atual
+    if (!ideServerUrl && !window.location.hostname.includes('sharepoint.com')) {
+      setTempIdeUrl(window.location.origin);
+    } else {
+      setTempIdeUrl(ideServerUrl);
+    }
+    setIsWorkspaceModalOpen(true);
+  };
+
   return (
     <div className="flex h-screen w-full overflow-hidden bg-dhl-dark text-slate-300 font-sans select-none">
       {/* Header - Professional Polish Theme */}
@@ -371,11 +414,7 @@ export default function App() {
           <div className="h-6 w-px bg-black/10 mx-1" />
           
           <button 
-            onClick={() => {
-              setTempWorkspaceUrl(`${activeSiteUrl}${currentFolder}`);
-              setTempIdeUrl(ideServerUrl);
-              setIsWorkspaceModalOpen(true);
-            }}
+            onClick={openWorkspaceModal}
             className="hidden md:flex items-center gap-2 px-3 py-1 bg-black/5 rounded text-[11px] font-medium text-black/70 hover:bg-black/10 transition-all cursor-pointer group"
           >
             <Folder className="w-3 h-3 translate-y-[1px] group-hover:text-dhl-red transition-colors" />
@@ -550,6 +589,25 @@ export default function App() {
                 </React.Fragment>
               ))}
               {selectedFile && (
+              <div className="flex items-center gap-2 pr-2 border-r border-black/10 mr-2">
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleBrowserBuild}
+                  disabled={executingCommand}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded font-black text-[10px] shadow-sm transition-all border ${
+                    buildStatus === 'success' ? 'bg-green-500 text-white border-green-600' :
+                    buildStatus === 'error' ? 'bg-red-500 text-white border-red-600' :
+                    'bg-dhl-dark text-dhl-yellow border-white/10 hover:bg-black'
+                  }`}
+                >
+                  {executingCommand ? <Loader2 className="w-3 h-3 animate-spin" /> : <Zap className={`w-3 h-3 ${buildStatus === 'idle' ? 'fill-dhl-yellow' : 'fill-white'}`} />}
+                  {buildStatus === 'building' ? 'BUILDING...' : buildStatus === 'success' ? 'BUILT!' : buildStatus === 'error' ? 'FAILED' : 'BROWSER BUILD'}
+                </motion.button>
+              </div>
+            )}
+            
+            {selectedFile && (
                 <>
                   <ChevronRight className="w-3 h-3 opacity-30 shrink-0" />
                   <span className="text-white/90 shrink-0 truncate">{selectedFile.Name}</span>
@@ -607,7 +665,7 @@ export default function App() {
                   
                   <div className="grid grid-cols-2 gap-4">
                     <button 
-                      onClick={() => setIsWorkspaceModalOpen(true)}
+                      onClick={openWorkspaceModal}
                       className="p-4 bg-white/5 border border-white/5 rounded-xl hover:bg-white/10 hover:border-dhl-yellow/30 transition-all text-left group"
                     >
                       <div className="text-[10px] font-black text-white/40 uppercase mb-2">Workspace</div>
@@ -800,12 +858,26 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="bg-dhl-yellow/5 border border-dhl-yellow/10 p-4 rounded-xl space-y-2">
-                       <p className="text-[11px] text-dhl-yellow font-bold uppercase mb-1">Dica de Uso:</p>
-                       <p className="text-[11px] text-white/60 leading-relaxed">
-                         1. No SharePoint, abra a pasta desejada e copie o link da barra de endereço.<br/>
-                         2. No AI Studio, copie o URL do navegador (ex: https://ais-dev...) e cole em "Servidor IDE".
-                       </p>
+                    <div className="bg-dhl-yellow/5 border border-dhl-yellow/10 p-4 rounded-xl space-y-4">
+                       <div className="space-y-1">
+                         <p className="text-[11px] text-dhl-yellow font-bold uppercase mb-1">Dica de Uso:</p>
+                         <p className="text-[11px] text-white/60 leading-relaxed">
+                           1. No SharePoint, abra a pasta desejada e copie o link da barra de endereço.<br/>
+                           2. No AI Studio, copie o URL do navegador (ex: https://ais-dev...) e cole em "Servidor IDE".
+                         </p>
+                       </div>
+                       
+                       {!window.location.hostname.includes('sharepoint.com') && (
+                         <div className="pt-2 border-t border-white/5">
+                           <button 
+                             onClick={copyIdeUrl}
+                             className="w-full py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-xs font-bold text-white transition-all flex items-center justify-center gap-2"
+                           >
+                              {copySuccess ? <CheckCircle2 className="w-3 h-3 text-green-400" /> : <Terminal className="w-3 h-3 text-dhl-yellow" />}
+                              {copySuccess ? 'Copiado para o Clipboard!' : 'Copiar URL deste Servidor IDE'}
+                           </button>
+                         </div>
+                       )}
                     </div>
                   </div>
                   <div className="px-6 py-4 bg-black/10 border-t border-white/5 flex gap-3">

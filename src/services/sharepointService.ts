@@ -56,11 +56,15 @@ export function parseSpUrl(fullUrl: string): { siteUrl: string; folderPath: stri
     const siteMatch = pathname.match(/(\/(sites|teams)\/[^/]+)/);
     const siteUrlBase = siteMatch ? origin + siteMatch[1] : origin;
     
-    // Tenta pegar o path do parâmetro 'id' (comum em links do SharePoint)
+    // Tenta pegar o path do parâmetro 'id' ou 'RootFolder' (comum em links do SharePoint)
     const urlParams = new URLSearchParams(url.search);
     const idParam = urlParams.get('id');
+    const rootFolderParam = urlParams.get('RootFolder');
     
-    let folderPath = decodeURIComponent(idParam || pathname);
+    let folderPath = decodeURIComponent(idParam || rootFolderParam || pathname);
+    
+    // Limpezas extras para links de "Sharing" do SharePoint (ex: /:f:/r/sites/...)
+    folderPath = folderPath.replace(/\/:[a-z]:\/[a-z]\//, '/');
     
     // Limpezas comuns
     folderPath = folderPath
