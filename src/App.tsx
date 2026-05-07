@@ -22,7 +22,8 @@ import {
   FolderOpen,
   FilePlus,
   X,
-  CheckCircle2
+  CheckCircle2,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -35,6 +36,7 @@ import {
   spSiteUrl,
   hasSpContext 
 } from './services/sharepointService';
+import { transform } from 'sucrase';
 
 export default function App() {
   const [files, setFiles] = useState<any[]>([]);
@@ -50,6 +52,7 @@ export default function App() {
   const [currentFolder, setCurrentFolder] = useState('');
   const [baseFolder, setBaseFolder] = useState('');
   const [activeSiteUrl, setActiveSiteUrl] = useState('');
+  const [ideServerUrl, setIdeServerUrl] = useState('');
   
   // New file state
   const [isNewFileModalOpen, setIsNewFileModalOpen] = useState(false);
@@ -58,11 +61,19 @@ export default function App() {
   // Workspace Settings
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [tempWorkspaceUrl, setTempWorkspaceUrl] = useState('');
+  const [tempIdeUrl, setTempIdeUrl] = useState('');
 
   useEffect(() => {
     // Carrega workspace salvo do localstorage se existir
     const savedSite = localStorage.getItem('dhl_sp_site');
     const savedFolder = localStorage.getItem('dhl_sp_folder');
+    const savedIde = localStorage.getItem('dhl_ide_url');
+
+    if (savedIde) setIdeServerUrl(savedIde);
+    else if (!window.location.hostname.includes('sharepoint.com')) {
+      // Se não for SharePoint, assume que o servidor é a origem atual
+      setIdeServerUrl(window.location.origin);
+    }
 
     if (savedSite && savedFolder) {
       setActiveSiteUrl(savedSite);
@@ -92,14 +103,22 @@ export default function App() {
   }, []);
 
   const loadPath = async (path: string, site?: string) => {
+    const targetSite = site || activeSiteUrl;
+    
+    // Se for ambiente de demo e usarmos a URL de mock, não tentamos buscar via API real
+    if (!hasSpContext() && (!targetSite || targetSite.includes('tenant.sharepoint.com'))) {
+      setCurrentFolder(path);
+      return; 
+    }
+
     setLoading(true);
     setCurrentFolder(path);
-    const targetSite = site || activeSiteUrl;
     try {
       const result = await listItems(path, targetSite);
       if (result.status) {
         setFiles(result.data.files);
         setFolders(result.data.folders);
+        setError(null);
       } else {
         setError(result.message);
       }
@@ -112,6 +131,10 @@ export default function App() {
 
   const handleSelectFile = async (file: any) => {
     setSelectedFile(file);
+    if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+      setCode('// Conteúdo de demonstração\nconsole.log("DHL Supply Chain - " + "' + file.Name + '");');
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -130,6 +153,10 @@ export default function App() {
 
   const handleSave = async () => {
     if (!selectedFile) return;
+    if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+      setError('Atenção: Modo de Demonstração. As alterações não serão persistidas no SharePoint.');
+      return;
+    }
     setSaving(true);
     try {
       const result = await saveFile(selectedFile.ServerRelativeUrl, code, activeSiteUrl);
@@ -149,24 +176,30 @@ export default function App() {
   };
 
   const handleSaveFolder = (folder: any) => {
-    loadPath(folder.ServerRelativeUrl);
+    loadPath(folder.ServerRelativeUrl, activeSiteUrl);
   };
 
   const navigateUp = () => {
     if (currentFolder === baseFolder) return;
     const parentPath = currentFolder.substring(0, currentFolder.lastIndexOf('/'));
-    loadPath(parentPath);
+    loadPath(parentPath, activeSiteUrl);
   };
 
   const handleCreateFile = async () => {
     if (!newFileName) return;
+    if (!hasSpContext() && activeSiteUrl.includes('tenant.sharepoint.com')) {
+      setNewFileName('');
+      setIsNewFileModalOpen(false);
+      setFiles(prev => [...prev, { Name: newFileName, ServerRelativeUrl: currentFolder + '/' + newFileName, Length: '0' }]);
+      return;
+    }
     setSaving(true);
     try {
       const result = await createFile(currentFolder, newFileName, '<!-- DHL New File -->', activeSiteUrl);
       if (result.status) {
         setNewFileName('');
         setIsNewFileModalOpen(false);
-        loadPath(currentFolder);
+        loadPath(currentFolder, activeSiteUrl);
       } else {
         setError(result.message);
       }
@@ -180,10 +213,26 @@ export default function App() {
   const applyWorkspace = () => {
     const { siteUrl, folderPath } = parseSpUrl(tempWorkspaceUrl);
     if (!siteUrl || !folderPath) {
-      setError('URL Inválida. Use o formato: https://dpdhl.sharepoint.com/sites/NomeDoSite/Pasta');
+      setError('URL do SharePoint Inválida. Use o formato: https://dpdhl.sharepoint.com/sites/NomeDoSite/Pasta');
       return;
     }
     
+    // Valida e limpa URL do IDE
+    let cleanIdeUrl = tempIdeUrl.trim().replace(/\/$/, "");
+    if (cleanIdeUrl && !cleanIdeUrl.startsWith('http')) {
+      setError('URL do Servidor IDE Inválida. Deve começar com http:// ou https://');
+      return;
+    }
+
+    if (cleanIdeUrl) {
+      setIdeServerUrl(cleanIdeUrl);
+      localStorage.setItem('dhl_ide_url', cleanIdeUrl);
+    } else {
+      // Se limpar o campo, remove do localStorage
+      setIdeServerUrl('');
+      localStorage.removeItem('dhl_ide_url');
+    }
+
     setActiveSiteUrl(siteUrl);
     setBaseFolder(folderPath);
     setCurrentFolder(folderPath);
@@ -196,6 +245,40 @@ export default function App() {
     setError(null);
   };
 
+  // Build via Browser (Sem Backend)
+  const handleBrowserBuild = async () => {
+    if (!selectedFile) return;
+    setExecutingCommand(true);
+    setIsTerminalOpen(true);
+    setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Iniciando compilação de ${selectedFile.Name}...`]);
+    
+    try {
+      // Transpilação TSX/TS para JS usando Sucrase (100% Client-side)
+      const compiled = transform(code, {
+        transforms: ['typescript', 'jsx', 'imports'],
+        production: true,
+      });
+
+      const jsFileName = selectedFile.Name.replace(/\.(tsx|ts|jsx)$/, '.js');
+      const jsFileUrl = `${currentFolder}/${jsFileName}`;
+      
+      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] Código transformado com sucesso. Salavando ${jsFileName}...`]);
+      
+      const saveResult = await saveFile(jsFileUrl, compiled.code, activeSiteUrl);
+      
+      if (saveResult.status) {
+        setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] SUCESSO: Arquivo ${jsFileName} gerado e salvo no SharePoint.`]);
+        loadPath(currentFolder, activeSiteUrl); // Atualiza lista
+      } else {
+        throw new Error(saveResult.message);
+      }
+    } catch (err: any) {
+      setTerminalLogs(prev => [...prev, `[BROWSER-BUILD] ERRO: ${err.message}`]);
+    } finally {
+      setExecutingCommand(false);
+    }
+  };
+
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([]);
   const [executingCommand, setExecutingCommand] = useState(false);
@@ -203,29 +286,57 @@ export default function App() {
   const runCommand = async (command: string) => {
     if (executingCommand) return;
     
+    if (!ideServerUrl) {
+      setIsWorkspaceModalOpen(true);
+      setError('Por favor, configure o "URL do Servidor IDE" no modal de configurações para rodar comandos como NPM.');
+      return;
+    }
+    
     setExecutingCommand(true);
     setIsTerminalOpen(true);
-    setTerminalLogs([]); // Clear previous logs
+    setTerminalLogs([]); 
     
     try {
-      const response = await fetch('/api/terminal/run', {
+      const response = await fetch(`${ideServerUrl}/api/terminal/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command })
+        body: JSON.stringify({ command }),
+        mode: 'cors'
+      }).catch(err => {
+        if (err.message.includes('Failed to fetch')) {
+          throw new Error(`Erro de Conexão: Não foi possível alcançar o servidor em "${ideServerUrl}". Verifique se o URL está correto e se o Servidor IDE no AI Studio está ativo e com CORS liberado.`);
+        }
+        throw err;
       });
-      const { taskId } = await response.json();
+
+      const responseText = await response.text();
+      let data;
+      try {
+        data = JSON.parse(responseText);
+      } catch (e) {
+        throw new Error(`O servidor IDE em "${ideServerUrl}" não retornou um JSON válido.\n\nSe você está no SharePoint, verifique se o URL do Servidor IDE nas configurações está correto e se o servidor está rodando.`);
+      }
       
-      if (!taskId) throw new Error('Não foi possível iniciar a tarefa');
+      const taskId = data.taskId;
+      if (!taskId) throw new Error(data.error || 'Não foi possível iniciar a tarefa');
 
       // Polling function
       const poll = async () => {
         try {
-          const res = await fetch(`/api/terminal/logs/${taskId}`);
-          const data = await res.json();
+          const res = await fetch(`${ideServerUrl}/api/terminal/logs/${taskId}`, { mode: 'cors' });
+          const logText = await res.text();
+          let logData;
+          try {
+            logData = JSON.parse(logText);
+          } catch (e) {
+            setTerminalLogs(prev => [...prev, `ERR_POLL: Resposta inválida`]);
+            setExecutingCommand(false);
+            return;
+          }
           
-          setTerminalLogs(data.logs);
+          setTerminalLogs(logData.logs);
           
-          if (data.status === 'running') {
+          if (logData.status === 'running') {
             setTimeout(poll, 2000);
           } else {
             setExecutingCommand(false);
@@ -262,6 +373,7 @@ export default function App() {
           <button 
             onClick={() => {
               setTempWorkspaceUrl(`${activeSiteUrl}${currentFolder}`);
+              setTempIdeUrl(ideServerUrl);
               setIsWorkspaceModalOpen(true);
             }}
             className="hidden md:flex items-center gap-2 px-3 py-1 bg-black/5 rounded text-[11px] font-medium text-black/70 hover:bg-black/10 transition-all cursor-pointer group"
@@ -340,7 +452,7 @@ export default function App() {
               {currentFolder.split('/').pop() || 'Root'}
             </div>
             <button 
-              onClick={() => loadPath(currentFolder)}
+              onClick={() => loadPath(currentFolder, activeSiteUrl)}
               className="ml-auto p-1.5 hover:bg-white/5 rounded text-white/40 hover:text-white transition-colors"
             >
               <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
@@ -430,7 +542,7 @@ export default function App() {
           {/* Breadcrumbs / Editor Bar */}
           <div className="h-9 bg-black/30 border-b border-white/5 px-4 flex items-center justify-between shrink-0">
             <div className="flex items-center gap-2 text-[11px] text-white/40 font-medium overflow-hidden whitespace-nowrap">
-              <span className="hover:text-white/80 cursor-pointer shrink-0" onClick={() => loadPath(baseFolder)}>root</span>
+              <span className="hover:text-white/80 cursor-pointer shrink-0" onClick={() => loadPath(baseFolder, activeSiteUrl)}>root</span>
               {currentFolder.replace(baseFolder, '').split('/').filter(Boolean).map((part, i) => (
                 <React.Fragment key={i}>
                   <ChevronRight className="w-3 h-3 opacity-30 shrink-0" />
@@ -529,6 +641,15 @@ export default function App() {
                         Terminal Output
                       </div>
                       <div className="flex items-center gap-2">
+                        <button 
+                          onClick={handleBrowserBuild}
+                          disabled={executingCommand}
+                          className="text-[9px] font-bold text-dhl-yellow hover:text-white transition-colors uppercase flex items-center gap-1"
+                        >
+                          <Zap className="w-3 h-3" />
+                          BUILD DIRETO (Sem Servidor)
+                        </button>
+                        <div className="w-px h-3 bg-white/10 mx-1" />
                         <button 
                           onClick={() => runCommand('npm install')}
                           disabled={executingCommand}
@@ -647,21 +768,43 @@ export default function App() {
                   </div>
                   <div className="p-8 space-y-6">
                     <div>
-                      <label className="block text-[10px] font-black text-white/40 uppercase mb-2 tracking-widest">URL do SharePoint ou Pasta</label>
+                      <label className="block text-[10px] font-black text-white/40 uppercase mb-2 tracking-widest">URL da Pasta SharePoint</label>
                       <input 
                         type="text" 
                         value={tempWorkspaceUrl}
                         onChange={(e) => setTempWorkspaceUrl(e.target.value)}
-                        autoFocus
-                        placeholder="https://dpdhl.sharepoint.com/sites/SeuSite/Documentos/SuaPasta"
-                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-4 text-white text-sm outline-none focus:border-dhl-yellow/50 transition-all font-mono"
-                        onKeyDown={(e) => e.key === 'Enter' && applyWorkspace()}
+                        placeholder="https://dpdhl.sharepoint.com/sites/SeuSite/Pasta"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-dhl-yellow/50 transition-all font-mono"
                       />
                     </div>
+
+                    <div>
+                      <label className="block text-[10px] font-black text-white/40 uppercase mb-2 tracking-widest">URL do Servidor IDE (Backend)</label>
+                      <input 
+                        type="text" 
+                        value={tempIdeUrl}
+                        onChange={(e) => setTempIdeUrl(e.target.value)}
+                        placeholder="https://ais-dev-xxxx.run.app"
+                        className="w-full bg-black/40 border border-white/10 rounded-lg px-4 py-3 text-white text-sm outline-none focus:border-dhl-yellow/50 transition-all font-mono"
+                      />
+                      <div className="flex gap-2 mt-2">
+                         <p className="text-[9px] text-white/30 italic">Necessário para rodar comandos do Terminal (npm install/build).</p>
+                         {!window.location.hostname.includes('sharepoint.com') && (
+                           <button 
+                             onClick={() => setTempIdeUrl(window.location.origin)}
+                             className="text-[9px] text-dhl-yellow font-bold hover:underline ml-auto"
+                           >
+                             Usar URL atual
+                           </button>
+                         )}
+                      </div>
+                    </div>
+
                     <div className="bg-dhl-yellow/5 border border-dhl-yellow/10 p-4 rounded-xl space-y-2">
                        <p className="text-[11px] text-dhl-yellow font-bold uppercase mb-1">Dica de Uso:</p>
                        <p className="text-[11px] text-white/60 leading-relaxed">
-                         Cole o link direto da barra de endereço do navegador quando estiver visualizando a pasta no SharePoint. O app irá extrair automaticamente o Site e o Path da pasta.
+                         1. No SharePoint, abra a pasta desejada e copie o link da barra de endereço.<br/>
+                         2. No AI Studio, copie o URL do navegador (ex: https://ais-dev...) e cole em "Servidor IDE".
                        </p>
                     </div>
                   </div>

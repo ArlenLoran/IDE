@@ -56,8 +56,19 @@ export function parseSpUrl(fullUrl: string): { siteUrl: string; folderPath: stri
     const siteMatch = pathname.match(/(\/(sites|teams)\/[^/]+)/);
     const siteUrlBase = siteMatch ? origin + siteMatch[1] : origin;
     
-    // O resto é o path da pasta (removendo Forms/AllItems.aspx se houver)
-    let folderPath = pathname.replace(/\/Forms\/.*$/, '').replace(/\/AllItems\.aspx$/, '');
+    // Tenta pegar o path do parâmetro 'id' (comum em links do SharePoint)
+    const urlParams = new URLSearchParams(url.search);
+    const idParam = urlParams.get('id');
+    
+    let folderPath = decodeURIComponent(idParam || pathname);
+    
+    // Limpezas comuns
+    folderPath = folderPath
+      .replace(/\/Forms\/.*$/, '')
+      .replace(/\/AllItems\.aspx$/, '')
+      .replace(/\/$/, ''); // Remove barra no final
+      
+    if (!folderPath.startsWith('/')) folderPath = '/' + folderPath;
     
     return { siteUrl: siteUrlBase, folderPath };
   } catch {

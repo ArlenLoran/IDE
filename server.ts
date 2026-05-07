@@ -2,11 +2,13 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { spawn } from "child_process";
+import cors from "cors";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  app.use(cors()); // Permite requisições de outros domínios (como dhl.sharepoint.com)
   app.use(express.json());
 
   // In-memory logs for terminal tasks
@@ -29,20 +31,29 @@ async function startServer() {
 
     console.log(`Executando Tarefa ${taskId}: ${command}`);
     
-    const [cmd, ...args] = command.split(' ');
-    const child = spawn(cmd, args, { shell: true });
+    // Executa o comando diretamente no shell para simplificar argumentos
+    const child = spawn(command, { shell: true, cwd: process.cwd() });
 
     child.stdout.on('data', (data) => {
-      tasks[taskId].logs.push(data.toString());
+      const output = data.toString();
+      tasks[taskId].logs.push(output);
     });
 
     child.stderr.on('data', (data) => {
-      tasks[taskId].logs.push(`STDERR: ${data.toString()}`);
+      const output = data.toString();
+      tasks[taskId].logs.push(`STDERR: ${output}`);
+    });
+
+    child.on('error', (err) => {
+      tasks[taskId].logs.push(`FALHA NO PROCESSO: ${err.message}`);
+      tasks[taskId].status = 'failed';
     });
 
     child.on('close', (code) => {
-      tasks[taskId].status = code === 0 ? 'completed' : 'failed';
-      tasks[taskId].logs.push(`Processo finalizado com código ${code}`);
+      if (tasks[taskId].status === 'running') {
+        tasks[taskId].status = code === 0 ? 'completed' : 'failed';
+        tasks[taskId].logs.push(`Processo finalizado com código ${code}`);
+      }
     });
 
     res.json({ taskId });
